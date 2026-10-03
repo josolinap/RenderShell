@@ -8,21 +8,19 @@ RUN curl -fsSL "https://pkgs.tailscale.com/stable/tailscale_${TS_VERSION}_amd64.
 # ---------- Runtime stage ----------
 FROM alpine:3.20
 
-# Core packages. ttyd (web terminal) and tmux come from Alpine's stable repos.
+# Core packages + openssh (for shellinabox auth) + filebrowser (lightweight GUI)
 RUN apk add --no-cache \
         ca-certificates \
         tini \
         supervisor \
         python3 \
         shadow \
+        openssh \
         curl \
         git \
         vim \
         nano \
         openssh-client \
-        openssh-keygen \
-        tmux \
-        ttyd \
         htop \
         bash \
         coreutils \
@@ -32,6 +30,10 @@ RUN apk add --no-cache \
         gzip \
         unzip \
         wget
+
+# Install shellinabox from Alpine edge/testing
+RUN apk add --no-cache --repository=http://dl-cdn.alpinelinux.org/alpine/edge/testing \
+        shellinabox
 
 # Install File Browser (lightweight web file manager, ~15MB binary)
 RUN curl -fsSL https://raw.githubusercontent.com/filebrowser/get/master/get.sh | bash && \
@@ -51,11 +53,6 @@ COPY --from=tailscale-builder /tmp/tailscale   /usr/local/bin/tailscale
 # Supervisor config
 COPY supervisord.conf /etc/supervisor/conf.d/services.conf
 
-# Web terminal launcher (ttyd + tmux)
-COPY start-terminal.sh /usr/local/bin/start-terminal.sh
-COPY tmux.conf /etc/tmux.conf
-RUN chmod +x /usr/local/bin/start-terminal.sh
-
 # Entrypoint
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
@@ -65,12 +62,21 @@ ENV ROOT_PASSWORD=change-me
 ENV FILEBROWSER_PASSWORD=admin
 RUN echo "root:${ROOT_PASSWORD}" | chpasswd
 
-# Use bash as root's login shell and set a friendly hostname
-RUN sed -i 's|^root:x:0:0:root:/root:/bin/.*|root:x:0:0:root:/root:/bin/bash|' /etc/passwd && \
-    echo "render-shell" > /etc/hostname
+# Generate SSH host keys + configure sshd
+RUN ssh-keygen -A && \
+    sed -i 's/^#PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed -i 's/^#PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config && \
+    sed -i 's|^root:x:0:0:root:/root:/bin/.*|root:x:0:0:root:/root:/bin/bash|' /etc/passwd && \
+    echo "render-shell" > /etc/hostname && \
+    # Suppress shellinabox SSH warnings: it hardcodes deprecated options
+    # (RhostsRSAAuthentication, RSAAuthentication) that Alpine's OpenSSH 9.x
+    # doesn't recognize. Rename real ssh, replace with wrapper that filters them.
+    mv /usr/bin/ssh /usr/bin/ssh.real && \
+    printf '#!/bin/sh\nexec /usr/bin/ssh.real "$@" 2> >(grep -v "Unsupported option" >&2)\n' > /usr/bin/ssh && \
+    chmod +x /usr/bin/ssh
 
 # Workspace + status page
-RUN mkdir -p /var/run/tailscale /workspace
+RUN mkdir -p /var/run/tailscale /workspace /run/sshd
 
 RUN printf '%s\n' \
   '<!DOCTYPE html>' \
@@ -80,7 +86,7 @@ RUN printf '%s\n' \
   'a{color:#1976d2;text-decoration:none;font-weight:500}' \
   'a:hover{text-decoration:underline}code{background:#e0e0e0;padding:2px 6px;border-radius:3px}</style></head>' \
   '<body><h1>Render Shell + File Browser</h1>' \
-  '<div class="card"><h3>Web Terminal (ttyd)</h3>' \
+  '<div class="card"><h3>Web Terminal (shellinabox)</h3>' \
   '<p>HTTPS via Tailscale Serve: <code>https://render-exit-node.curl-trench.ts.net/</code></p></div>' \
   '<div class="card"><h3>File Browser (GUI)</h3>' \
   '<p>HTTPS via Tailscale Serve: <code>https://render-exit-node.curl-trench.ts.net:5800/</code></p>' \
