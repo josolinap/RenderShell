@@ -24,9 +24,6 @@ if [ -z "${TAILSCALE_AUTHKEY}" ]; then
     echo "[entrypoint] WARNING: TAILSCALE_AUTHKEY not set — node will not register"
 fi
 
-# Ensure sshd privilege separation directory exists
-mkdir -p /run/sshd
-
 # Set friendly hostname (Render overrides at infra level, but we try anyway)
 hostname render-shell 2>/dev/null || true
 

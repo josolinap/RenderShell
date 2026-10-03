@@ -1,8 +1,8 @@
-# render_tailscaled + shellinabox
+# render_tailscaled + ttyd
 
 A Render free-tier web service that combines:
 - **Tailscale exit node** — routes your traffic through Render's IP
-- **Shellinabox web terminal** — browser-based root shell, accessible via your Tailnet
+- **ttyd web terminal** — browser-based root shell (xterm.js + tmux), accessible via your Tailnet
 - **HTTP status page** — placeholder page on the public Render URL
 
 ## Architecture
@@ -18,7 +18,7 @@ A Render free-tier web service that combines:
 │  │  │  ↳ registers as exit node via authkey│    │   │
 │  │  └──────────────────────────────────────┘    │   │
 │  │                                              │   │
-│  │  ┌─ shellinaboxd (port 4200) ───────────┐    │   │
+│  │  ┌─ ttyd + tmux (127.0.0.1:4200) ───────┐    │   │
 │  │  │  ↳ web terminal (Tailnet-only)       │    │   │
 │  │  └──────────────────────────────────────┘    │   │
 │  │                                              │   │
@@ -54,7 +54,7 @@ Copy the key — it looks like `tskey-auth-XXXXXXXX-YYYYYYYYYYYYYYYY`.
 | Key | Value | Purpose |
 |---|---|---|
 | `TAILSCALE_AUTHKEY` | `tskey-auth-XXXX-YYYY` | Auto-registers the node on your Tailnet |
-| `ROOT_PASSWORD` | `your-strong-password` | Password for the shellinabox login |
+| `ROOT_PASSWORD` | `your-strong-password` | Password for the web terminal login |
 | `TAILSCALE_HOSTNAME` | `render-shell` | (optional) Custom hostname on your Tailnet |
 
 ### 3. Approve the exit node
@@ -77,7 +77,7 @@ tailscale up --exit-node=render-shell --exit-node-allow-lan-access=true
 
 ### 5. Access the web terminal
 
-The shellinabox terminal is **only accessible via your Tailnet** (not the public Render URL):
+The ttyd terminal is **only accessible via your Tailnet** (not the public Render URL):
 
 ```
 http://render-shell.<your-tailnet>.ts.net:4200
@@ -89,14 +89,14 @@ tailscale status | grep render-shell
 # → 100.x.x.x  render-shell  ...
 ```
 
-Then open `http://100.x.x.x:4200` in your browser. Login with `root` + your `ROOT_PASSWORD`.
+Then open `http://100.x.x.x:4200` in your browser. Your browser will ask for a login (HTTP basic auth): use `root` + your `ROOT_PASSWORD`.
 
 ## What's exposed where
 
 | Port | Where | What |
 |---|---|---|
 | 8080 | Public Render URL (`https://...onrender.com`) | Status page (HTML) |
-| 4200 | Tailnet only (`http://render-shell:4200`) | Shellinabox web terminal |
+| 4200 | Tailnet only (`http://render-shell:4200`) | ttyd web terminal |
 | — | Tailscale | Exit node routing |
 
 The web terminal is **not** on the public Render URL — only the status page is. This is intentional: the terminal should be private.
@@ -106,14 +106,15 @@ The web terminal is **not** on the public Render URL — only the status page is
 | Variable | Required | Default | Description |
 |---|---|---|---|
 | `TAILSCALE_AUTHKEY` | ✅ yes | — | Tailscale authkey for auto-registration |
-| `ROOT_PASSWORD` | ✅ yes | `change-me` | Password for shellinabox login |
+| `ROOT_PASSWORD` | ✅ yes | `change-me` | Password for the web terminal login (user `root`) |
+| `TTYD_CHECK_ORIGIN` | no | `0` | Set to `1` to reject cross-origin WebSocket connections (test that the terminal still connects first) |
 | `TAILSCALE_HOSTNAME` | no | `render-exit-node` | Hostname on your Tailnet |
 | `TS_VERSION` | no | `1.86.2` | Tailscale version (build arg) |
 
 ## Free tier limitations
 
-- **512MB RAM, 0.1 CPU** — enough for shellinabox + light dev work
-- **Sleeps after 15 min inactivity** — shellinabox sessions die on sleep; the Tailscale exit node also drops
+- **512MB RAM, 0.1 CPU** — enough for the web terminal + light dev work
+- **Sleeps after 15 min inactivity** — terminal sessions die on sleep; the Tailscale exit node also drops
 - **750 instance-hours/month** (~31 days) — enough for 24/7 for one month
 - **No persistent disk** — files in `/root` are lost on restart
 
@@ -121,19 +122,26 @@ The web terminal is **not** on the public Render URL — only the status page is
 
 ### Auto-login (no password prompt)
 
-Edit `supervisord.conf`, change the shellinabox command:
-```
--s /:LOGIN    →   -s /:root
-```
+Edit `start-terminal.sh` and delete the `--credential` line (and its trailing `\`).
+
 ⚠ Anyone on your Tailnet gets a root shell without a password.
 
-### Different shellinabox theme
+### Terminal theme and font
 
-Edit `supervisord.conf`:
+Edit the `-t` (client option) lines in `start-terminal.sh`, for example:
 ```
---css=/etc/shellinabox/options-enabled/00+Black-on-White.css
+-t fontSize=16
+-t 'theme={"background":"#000000","foreground":"#ffffff"}'
 ```
-Available themes in `/etc/shellinabox/options-enabled/`.
+Any xterm.js option can be set this way; see the
+[ttyd client options](https://github.com/tsl0922/ttyd/wiki/Client-Options).
+
+### Persistent terminal sessions (tmux)
+
+The terminal attaches to a shared tmux session named `main`, so reloading the
+page, a flaky connection or opening a second device reconnects to the same
+shell. Mouse-wheel scrolling works through tmux (`/etc/tmux.conf`, copied from
+`tmux.conf`). The session still ends when the container restarts or sleeps.
 
 ### Keep container awake (prevents sleep)
 
